@@ -4,7 +4,7 @@ use bitcoin::bip32::Xpub;
 use futures::{FutureExt as _, future::Either};
 use teloxide::{
     requests::{HasPayload, Request as _, Requester},
-    types::UpdateId as UpdateSeqId,
+    types::{ChatId, UpdateId as UpdateSeqId},
 };
 
 fn set_tracing_subscriber() -> anyhow::Result<()> {
@@ -60,7 +60,7 @@ async fn user_is_approved(
 
 async fn upgrade_user_permissions(
     tg_bot: &teloxide::Bot,
-    chat_id: teloxide::types::ChatId,
+    chat_id: ChatId,
     user_id: teloxide::types::UserId,
 ) -> anyhow::Result<()> {
     use teloxide::types::ChatPermissions;
@@ -84,119 +84,65 @@ async fn upgrade_user_permissions(
 async fn handle_chat_join_request(
     tg_bot: &teloxide::Bot,
     xpub: &Xpub,
-    electrs_rest_api_url: &str,
     join_request: &teloxide::types::ChatJoinRequest,
 ) -> anyhow::Result<()> {
     let user = &join_request.from;
-    let user_is_approved =
-        user_is_approved(xpub, electrs_rest_api_url, user.id).await?;
-    if !user_is_approved {
-        let signet_addr = generate_signet_addr(xpub, user.id)?;
-        let msg = format!(
-            "Welcome to DC\\-Insiders\\! You will be restricted from posting \
-             mentions, links, attachments, and media\\. You can remove this \
-             restriction by sending 1 Signet coin to `{}`, and posting a \
-             message including an email address, link, or mention \
-             \\(eg\\. @{}\\) in the group\\.",
-            signet_addr,
-            teloxide::utils::markdown::escape("dc_insiders_test_bot"),
-        );
-        let _msg: teloxide::types::Message = tg_bot
-            .send_message(join_request.user_chat_id, msg)
-            .with_payload_mut(|send_message| {
-                send_message.parse_mode =
-                    Some(teloxide::types::ParseMode::MarkdownV2)
-            })
-            .send()
-            .await?;
-        tracing::trace!(
-            user_id=%user.id,
-            username=user.username,
-            first_name=%user.first_name,
-            last_name=user.last_name,
-            %signet_addr,
-            "welcome message sent successfully",
-        );
-    }
+    let signet_addr = generate_signet_addr(xpub, user.id)?;
+    let msg = format!(
+        "Welcome to DC\\-Insiders\\! Reply in this DM chat to be added to \
+         the group\\. You will be restricted from posting mentions, \
+         links, attachments, and media\\. You can remove this restriction \
+         by sending 1 Signet coin to `{}`, and sending a message in this \
+         DM chat\\.",
+        signet_addr,
+    );
+    let _msg: teloxide::types::Message = tg_bot
+        .send_message(join_request.user_chat_id, msg)
+        .with_payload_mut(|send_message| {
+            send_message.parse_mode =
+                Some(teloxide::types::ParseMode::MarkdownV2)
+        })
+        .send()
+        .await?;
     tracing::trace!(
         user_id=%user.id,
         username=user.username,
         first_name=%user.first_name,
         last_name=user.last_name,
-        "approving chat join request"
+        %signet_addr,
+        "welcome message sent successfully",
     );
-    let _: teloxide::types::True = tg_bot
-        .approve_chat_join_request(join_request.chat.id, user.id)
-        .send()
-        .await?;
-    tracing::info!(
-        user_id=%user.id,
-        username=user.username,
-        first_name=%user.first_name,
-        last_name=user.last_name,
-        "approved chat join request"
-    );
-    if user_is_approved {
-        let () =
-            upgrade_user_permissions(tg_bot, join_request.chat.id, user.id)
-                .await?;
-        tracing::trace!(
-            user_id=%user.id,
-            username=user.username,
-            first_name=%user.first_name,
-            last_name=user.last_name,
-            "upgraded permissions"
-        );
-    }
     Ok(())
 }
 
-fn msg_contains_restricted_content(msg: &teloxide::types::Message) -> bool {
-    use teloxide::types::MessageEntityKind;
-    if let Some(entities) = msg.parse_entities()
-        && entities.iter().any(|entity| {
-            matches!(
-                entity.kind(),
-                MessageEntityKind::Email
-                    | MessageEntityKind::Mention
-                    | MessageEntityKind::TextLink { url: _ }
-                    | MessageEntityKind::TextMention { user: _ }
-                    | MessageEntityKind::Url
-            )
-        })
-    {
-        return true;
-    }
-    if let Some(entities) = msg.parse_caption_entities()
-        && entities.iter().any(|entity| {
-            matches!(
-                entity.kind(),
-                MessageEntityKind::Email
-                    | MessageEntityKind::Mention
-                    | MessageEntityKind::TextLink { url: _ }
-                    | MessageEntityKind::TextMention { user: _ }
-                    | MessageEntityKind::Url
-            )
-        })
-    {
-        return true;
-    }
-    false
-}
+const GROUP_CHAT_ID: ChatId = ChatId(-1003587331795);
 
-async fn handle_msg(
+async fn handle_dm(
     tg_bot: &teloxide::Bot,
     xpub: &Xpub,
     electrs_rest_api_url: &str,
-    msg: &teloxide::types::Message,
+    msg_sender: &teloxide::types::User,
 ) -> anyhow::Result<()> {
-    let msg_sender = msg.from.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("expected message {} to have a sender", msg.id)
-    })?;
-    let user_is_approved =
-        user_is_approved(xpub, electrs_rest_api_url, msg_sender.id).await?;
-    if user_is_approved {
-        let () = upgrade_user_permissions(tg_bot, msg.chat.id, msg_sender.id)
+    tracing::trace!(
+        user_id=%msg_sender.id,
+        username=msg_sender.username,
+        first_name=%msg_sender.first_name,
+        last_name=msg_sender.last_name,
+        "approving chat join request"
+    );
+    let _: teloxide::types::True = tg_bot
+        .approve_chat_join_request(GROUP_CHAT_ID, msg_sender.id)
+        .send()
+        .await?;
+    tracing::info!(
+        user_id=%msg_sender.id,
+        username=msg_sender.username,
+        first_name=%msg_sender.first_name,
+        last_name=msg_sender.last_name,
+        "approved chat join request"
+    );
+    if user_is_approved(xpub, electrs_rest_api_url, msg_sender.id).await? {
+        let () = upgrade_user_permissions(tg_bot, GROUP_CHAT_ID, msg_sender.id)
             .await?;
         tracing::trace!(
             user_id=%msg_sender.id,
@@ -206,7 +152,51 @@ async fn handle_msg(
             "upgraded permissions"
         );
     }
-    if !msg_contains_restricted_content(msg) || user_is_approved {
+    Ok(())
+}
+
+fn msg_entity_is_restricted_content(
+    msg_entity_kind: &teloxide::types::MessageEntityKind,
+) -> bool {
+    use teloxide::types::MessageEntityKind;
+    matches!(
+        msg_entity_kind,
+        MessageEntityKind::Email
+            | MessageEntityKind::Mention
+            | MessageEntityKind::TextLink { url: _ }
+            | MessageEntityKind::TextMention { user: _ }
+            | MessageEntityKind::Url
+    )
+}
+
+fn msg_contains_restricted_content(msg: &teloxide::types::Message) -> bool {
+    if let Some(entities) = msg.parse_entities()
+        && entities
+            .iter()
+            .any(|entity| msg_entity_is_restricted_content(entity.kind()))
+    {
+        return true;
+    }
+    if let Some(entities) = msg.parse_caption_entities()
+        && entities
+            .iter()
+            .any(|entity| msg_entity_is_restricted_content(entity.kind()))
+    {
+        return true;
+    }
+    false
+}
+
+async fn handle_public_msg(
+    tg_bot: &teloxide::Bot,
+    xpub: &Xpub,
+    electrs_rest_api_url: &str,
+    msg_sender: &teloxide::types::User,
+    msg: &teloxide::types::Message,
+) -> anyhow::Result<()> {
+    if !msg_contains_restricted_content(msg)
+        || user_is_approved(xpub, electrs_rest_api_url, msg_sender.id).await?
+    {
         tracing::debug!(
             %msg.id,
             username=msg_sender.username,
@@ -248,15 +238,12 @@ async fn handle_msg(
         "{msg_intro} message in DC\\-Insiders has been deleted\\. \
          You are restricted from posting mentions, links, attachments, and \
          media\\. You can remove this restriction by sending 1 Signet coin to \
-         `{}`, and posting a message including an email address, link, or \
-         mention \\(eg\\. @{}\\) in the group\\.",
+         `{}`, and sending a message in this DM chat\\.",
         signet_addr,
-        teloxide::utils::markdown::escape("dc_insiders_test_bot"),
     );
     let _msg: teloxide::types::Message = tg_bot
-        .send_message(msg.chat.id, reply_text)
+        .send_message(ChatId::from(msg_sender.id), reply_text)
         .with_payload_mut(|send_message| {
-            send_message.disable_notification = Some(true);
             send_message.parse_mode =
                 Some(teloxide::types::ParseMode::MarkdownV2)
         })
@@ -271,6 +258,23 @@ async fn handle_msg(
         "notification message sent successfully",
     );
     Ok(())
+}
+
+async fn handle_msg(
+    tg_bot: &teloxide::Bot,
+    xpub: &Xpub,
+    electrs_rest_api_url: &str,
+    msg: &teloxide::types::Message,
+) -> anyhow::Result<()> {
+    let msg_sender = msg.from.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("expected message {} to have a sender", msg.id)
+    })?;
+    if msg.chat.is_private() {
+        handle_dm(tg_bot, xpub, electrs_rest_api_url, msg_sender).await
+    } else {
+        handle_public_msg(tg_bot, xpub, electrs_rest_api_url, msg_sender, msg)
+            .await
+    }
 }
 
 async fn handle_update(
@@ -290,13 +294,7 @@ async fn handle_update(
                 last_name=user.last_name,
                 "Handling chat join request",
             );
-            handle_chat_join_request(
-                tg_bot,
-                xpub,
-                electrs_rest_api_url,
-                join_request,
-            )
-            .await
+            handle_chat_join_request(tg_bot, xpub, join_request).await
         }
         teloxide::types::UpdateKind::EditedMessage(msg) => {
             let user = msg.from.as_ref();
